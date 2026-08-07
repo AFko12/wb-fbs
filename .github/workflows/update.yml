@@ -1,0 +1,34 @@
+name: Обновление данных дашборда
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # ежедневно в 06:00 по Москве
+  workflow_dispatch: {}    # кнопка «Run workflow» для ручного запуска
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Забрать данные из WB и пересобрать страницу
+        env:
+          WB_TOKEN: ${{ secrets.WB_TOKEN }}
+        run: python3 fetch_wb_data.py --days 90 --inject index.html
+
+      - name: Закоммитить обновление
+        run: |
+          git config user.name "wb-dashboard-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add index.html data.json
+          git diff --cached --quiet && echo "нет изменений" && exit 0
+          git commit -m "Автообновление данных $(date -u +'%Y-%m-%d %H:%M') UTC"
+          git push
