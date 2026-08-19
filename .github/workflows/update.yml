@@ -15,14 +15,14 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 340   # лимит WB может быть занят другими сервисами по несколько часов — ждём
     steps:
       - uses: actions/checkout@v4
 
       - name: Забрать данные из WB и пересобрать страницу
         env:
           WB_TOKEN: ${{ secrets.WB_TOKEN }}
-        run: python3 fetch_wb_data.py --days 90 --inject index.html
+        run: python3 fetch_wb_data.py --days 40 --inject index.html
 
       - name: Закоммитить обновление
         run: |
