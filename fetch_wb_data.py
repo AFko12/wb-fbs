@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
 Забирает данные из Wildberries Statistics API и готовит данные для дашборда.
+
 Работает ИНКРЕМЕНТАЛЬНО: помнит, докуда дочитал (wb_cache.json), и в каждом
-запуске просит у WB только изменения с прошлого раза — 2 маленьких запроса.
+запуске просит у WB только изменения с прошлого раза.
+
+Особенность лимитов WB: «global limiter» кабинета часто пропускает один запрос,
+а следующий блокирует на часы (лимит делят все сервисы аналитики). Поэтому за
+запуск мы гарантированно делаем ОДИН запрос — к тому источнику, что сильнее
+устарел (заказы или продажи), — а второй пробуем только если WB не против.
+Два запуска в день по расписанию закрывают оба источника.
 
 Использование:
     WB_TOKEN="..." python3 fetch_wb_data.py --inject index.html
-    WB_TOKEN="..." python3 fetch_wb_data.py --full --days 40   # перечитать всё заново
-
-Эндпоинты (лимит: 1 запрос в минуту на аккаунт + общий «global limiter» кабинета):
-    GET https://statistics-api.wildberries.ru/api/v1/supplier/orders
-    GET https://statistics-api.wildberries.ru/api/v1/supplier/sales
+    WB_TOKEN="..." python3 fetch_wb_data.py --full --days 25   # перечитать всё заново
 """
 
 import argparse
@@ -26,14 +29,16 @@ from datetime import datetime, timedelta, timezone
 BASE = "https://statistics-api.wildberries.ru/api/v1/supplier"
 MSK = timezone(timedelta(hours=3))
 CACHE = "wb_cache.json"
-MAX_WAIT_SEC = 3 * 3600      # сколько суммарно готовы ждать лимит WB за один запуск
+MAX_WAIT_SEC = 3 * 3600      # первый запрос за запуск готовы ждать до 3 часов
+SKIP_WAIT_SEC = 900          # последующие: если WB просит больше 15 мин — оставим на следующий запуск
 KEEP_DAYS = 90               # глубина хранения в кэше
 _WAITED = 0
+_FIRST = True
 
 
-def api_get(path: str, token: str, date_from: str) -> list | None:
+def api_get(path: str, token: str, date_from: str):
     """Все страницы с lastChangeDate >= date_from. None — если лимит не дождались."""
-    global _WAITED
+    global _WAITED, _FIRST
     rows, cursor = [], date_from
     while True:
         url = f"{BASE}/{path}?" + urllib.parse.urlencode({"dateFrom": cursor, "flag": 0})
@@ -44,16 +49,20 @@ def api_get(path: str, token: str, date_from: str) -> list | None:
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 retry = int(e.headers.get("X-Ratelimit-Retry") or 65)
+                if not _FIRST and retry > SKIP_WAIT_SEC:
+                    print(f"  {path}: WB просит {retry}с — это уже не первый запрос, оставляем на следующий запуск", flush=True)
+                    return rows or None
                 if _WAITED + retry > MAX_WAIT_SEC:
                     print(f"  {path}: лимит кабинета занят ещё {retry}с (уже ждали {_WAITED}с) — "
                           f"пропускаем до следующего запуска", flush=True)
-                    return None
+                    return rows or None
                 print(f"  {path}: лимит кабинета занят другими сервисами, WB просит {retry}с — ждём...", flush=True)
                 time.sleep(retry + 5)
                 _WAITED += retry
                 continue
             print(f"Ошибка API {e.code}: {e.read().decode()[:300]}", file=sys.stderr)
             sys.exit(1)
+        _FIRST = False
         if not batch:
             break
         rows.extend(batch)
@@ -123,7 +132,7 @@ def inject(html_path: str, data: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--days", type=int, default=40, help="глубина при полной перечитке")
+    ap.add_argument("--days", type=int, default=25, help="глубина при полной перечитке")
     ap.add_argument("--full", action="store_true", help="игнорировать кэш, перечитать всё")
     ap.add_argument("--token", default=os.environ.get("WB_TOKEN"))
     ap.add_argument("--inject", metavar="INDEX_HTML")
@@ -139,11 +148,13 @@ def main() -> None:
     start = (datetime.now(MSK) - timedelta(days=min(args.days, 90))).strftime("%Y-%m-%dT00:00:00")
     updated = 0
 
-    # --- заказы: только изменения с прошлого раза ---
-    o_from = cache["cursor_orders"] or start
-    print(f"Заказы: изменения с {o_from}", flush=True)
-    orders = api_get("orders", args.token, o_from)
-    if orders is not None:
+    def fetch_orders() -> bool:
+        nonlocal updated
+        o_from = cache["cursor_orders"] or start
+        print(f"Заказы: изменения с {o_from}", flush=True)
+        orders = api_get("orders", args.token, o_from)
+        if orders is None:
+            return False
         for o in orders:
             if not args.all and o.get("warehouseType") != "Склад продавца":
                 continue
@@ -155,13 +166,15 @@ def main() -> None:
             cache["cursor_orders"] = max(x["lastChangeDate"] for x in orders)
         updated += 1
         print(f"  FBS-заказов в кэше: {len(cache['orders'])}", flush=True)
-        time.sleep(61)
+        return True
 
-    # --- продажи: только изменения с прошлого раза ---
-    s_from = cache["cursor_sales"] or start
-    print(f"Продажи: изменения с {s_from}", flush=True)
-    sales = api_get("sales", args.token, s_from)
-    if sales is not None:
+    def fetch_sales() -> bool:
+        nonlocal updated
+        s_from = cache["cursor_sales"] or start
+        print(f"Продажи: изменения с {s_from}", flush=True)
+        sales = api_get("sales", args.token, s_from)
+        if sales is None:
+            return False
         for s in sales:
             srid = s.get("srid")
             if not srid:
@@ -174,6 +187,16 @@ def main() -> None:
         if sales:
             cache["cursor_sales"] = max(x["lastChangeDate"] for x in sales)
         updated += 1
+        return True
+
+    # сначала то, что сильнее устарело (None = никогда не качали)
+    steps = [fetch_orders, fetch_sales]
+    if (cache["cursor_sales"] or "") < (cache["cursor_orders"] or ""):
+        steps.reverse()
+    for i, step in enumerate(steps):
+        ok = step()
+        if i == 0 and ok:
+            time.sleep(61)
 
     save_cache(cache)
     if updated == 0 and not cache["orders"]:
@@ -183,7 +206,8 @@ def main() -> None:
     data = build_dataset(cache)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
-    print(f"Готово: {len(data['orders'])} FBS-заказов, обновлено источников: {updated}/2")
+    print(f"Готово: {len(data['orders'])} FBS-заказов, обновлено источников за запуск: {updated}/2 "
+          f"(заказы до {cache['cursor_orders']}, продажи до {cache['cursor_sales']})")
     if args.inject:
         inject(args.inject, data)
 
