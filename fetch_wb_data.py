@@ -112,7 +112,7 @@ def build_dataset(cache: dict) -> dict:
                 hours = round(h, 1)
         flags = (1 if o["cancel"] else 0) | (2 if s and s.get("ret") else 0)
         recs.append([t_order.strftime("%Y-%m-%d"), hours, w_idx[w], d_idx[d], flags])
-    recs.sort()
+    recs.sort(key=lambda r: r[0])
     return {
         "generatedAt": datetime.now(MSK).strftime("%Y-%m-%d %H:%M МСК"),
         "warehouses": warehouses, "districts": districts, "orders": recs,
