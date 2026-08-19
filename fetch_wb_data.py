@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 BASE = "https://statistics-api.wildberries.ru/api/v1/supplier"
 MSK = timezone(timedelta(hours=3))
+MAX_WAIT_SEC = 5 * 3600  # сколько суммарно готовы ждать лимит WB за один запуск
 
 
 def api_get(path: str, token: str, date_from: str) -> list:
@@ -39,18 +40,21 @@ def api_get(path: str, token: str, date_from: str) -> list:
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 retry = int(e.headers.get("X-Ratelimit-Retry") or 65)
-                if retry > 1800:
-                    print(f"Лимит WB занят надолго ({retry}с) — выходим, попробуем в следующий запуск", file=sys.stderr)
+                waited = globals().setdefault("_WAITED", 0)
+                if waited + retry > MAX_WAIT_SEC:
+                    print(f"Лимит WB занят слишком долго (ещё {retry}с, уже ждали {waited}с) — "
+                          f"выходим, попробуем в следующий запуск", file=sys.stderr)
                     sys.exit(2)
-                print(f"  лимит запросов, WB просит подождать {retry} сек...")
-                time.sleep(retry + 3)
+                print(f"  лимит кабинета занят (другие сервисы), WB просит подождать {retry} сек — ждём...", flush=True)
+                time.sleep(retry + 5)
+                globals()["_WAITED"] = waited + retry
                 continue
             print(f"Ошибка API {e.code}: {e.read().decode()[:300]}", file=sys.stderr)
             sys.exit(1)
         if not batch:
             break
         rows.extend(batch)
-        print(f"  {path}: получено {len(rows)} строк")
+        print(f"  {path}: получено {len(rows)} строк", flush=True)
         if len(batch) < 80000:
             break
         cursor = max(x["lastChangeDate"] for x in batch)
@@ -66,7 +70,9 @@ def parse_dt(s: str) -> datetime:
     return dt
 
 
-def build_dataset(orders: list, sales: list) -> dict:
+def build_dataset(orders: list, sales: list, only_fbs: bool = True) -> dict:
+    if only_fbs:
+        orders = [o for o in orders if o.get("warehouseType") == "Склад продавца"]
     # продажи по srid: дата продажи; возвраты (saleID начинается с R)
     sale_by_srid, returns = {}, set()
     for s in sales:
@@ -138,6 +144,7 @@ def main() -> None:
     ap.add_argument("--token", default=os.environ.get("WB_TOKEN"), help="токен WB (или переменная WB_TOKEN)")
     ap.add_argument("--inject", metavar="INDEX_HTML", help="вшить данные в HTML-файл дашборда")
     ap.add_argument("--out", default="data.json")
+    ap.add_argument("--all", action="store_true", help="включить и FBO-заказы (по умолчанию только FBS — склад продавца)")
     args = ap.parse_args()
 
     if not args.token:
@@ -152,7 +159,7 @@ def main() -> None:
     print("Забираю продажи...")
     sales = api_get("sales", args.token, date_from)
 
-    data = build_dataset(orders, sales)
+    data = build_dataset(orders, sales, only_fbs=not args.all)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
     print(f"Готово: {args.out} — {len(data['orders'])} заказов, "
