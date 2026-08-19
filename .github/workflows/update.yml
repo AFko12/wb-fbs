@@ -2,7 +2,8 @@ name: Обновление данных дашборда
 
 on:
   schedule:
-    - cron: "0 3 * * *"   # ежедневно в 06:00 по Москве
+    - cron: "30 0 * * *"   # 03:30 по Москве — тихое время, сторонние сервисы обычно спят
+    - cron: "0 11 * * *"   # 14:00 по Москве — дневная досинхронизация
   workflow_dispatch: {}    # кнопка «Run workflow» для ручного запуска
 
 permissions:
@@ -15,20 +16,21 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 340   # лимит WB может быть занят другими сервисами по несколько часов — ждём
+    timeout-minutes: 200   # скрипт терпеливо ждёт лимит WB до 3 часов
     steps:
       - uses: actions/checkout@v4
 
-      - name: Забрать данные из WB и пересобрать страницу
+      - name: Забрать изменения из WB (инкрементально) и пересобрать страницу
         env:
           WB_TOKEN: ${{ secrets.WB_TOKEN }}
-        run: python3 fetch_wb_data.py --days 40 --inject index.html
+        run: python3 fetch_wb_data.py --inject index.html
 
       - name: Закоммитить обновление
+        if: always()
         run: |
           git config user.name "wb-dashboard-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add index.html data.json
+          git add -A index.html data.json wb_cache.json
           git diff --cached --quiet && echo "нет изменений" && exit 0
           git commit -m "Автообновление данных $(date -u +'%Y-%m-%d %H:%M') UTC"
           git push
