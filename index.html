@@ -157,6 +157,15 @@
 </div>
 
 <div class="card">
+  <h2>Этапы пути по складам</h2>
+  <div class="note">Разбивка времени: сколько собираем и сдаём мы, сколько СЦ принимает после сдачи (приёмка/сортировка)
+  и сколько заказ едет к покупателю после приёмки. Медианы по заказам выбранного периода; наведите — число заказов с этим этапом.</div>
+  <div class="tbl-wrap"><table class="matrix" id="stagesTbl"></table></div>
+  <div class="note" id="stagesEmpty" style="display:none;margin-top:10px">Данных об этапах пока нет — они появятся после
+  первого обновления с токеном, у которого есть категория «Маркетплейс» (даём доступ к поставкам FBS).</div>
+</div>
+
+<div class="card">
   <h2>Динамика по неделям</h2>
   <div class="note">Медиана времени доставки по неделям (по дате заказа), в днях — по выбранному складу и периоду.</div>
   <div class="chart-box" id="weekly"></div>
@@ -342,6 +351,57 @@ function matrix() {
   });
 }
 
+/* ---------- этапы пути ---------- */
+function stages() {
+  const rows = filtered();
+  const whList = (S.wh < 0 ? DATA.warehouses.map((_, i) => i) : [S.wh]);
+  const agg = {};                       // wIdx -> {h1:[],h2:[],h3:[],tot:[]}
+  for (const o of rows) {
+    if (o[4] & 1) continue;             // отменённые не считаем
+    const a = (agg[o[2]] ??= { h1: [], h2: [], h3: [], tot: [] });
+    if (o[5] != null) a.h1.push(o[5]);
+    if (o[6] != null) a.h2.push(o[6]);
+    if (o[1] != null) {
+      a.tot.push(o[1]);
+      if (o[5] != null && o[6] != null) {
+        const rest = o[1] - o[5] - o[6];
+        if (rest > 0) a.h3.push(rest);
+      }
+    }
+  }
+  const tbl = $("#stagesTbl"); tbl.replaceChildren();
+  const hasAny = Object.values(agg).some(a => a.h1.length || a.h2.length);
+  $("#stagesEmpty").style.display = hasAny ? "none" : "";
+  if (!hasAny) { tbl.style.display = "none"; return; }
+  tbl.style.display = "";
+  const heads = ["Склад", "Заказ → сдача (мы)", "Сдача → приёмка СЦ", "Приёмка → вручение", "Вся доставка"];
+  const thead = tbl.createTHead().insertRow();
+  for (const h of heads) { const th = document.createElement("th"); th.textContent = h; thead.append(th); }
+  const body = tbl.createTBody();
+  const mkRow = (label, a) => {
+    const tr = body.insertRow();
+    tr.insertCell().textContent = label;
+    [[a.h1, "заказ → сдача"], [a.h2, "сдача → приёмка СЦ"], [a.h3, "приёмка → вручение"], [a.tot, "вся доставка"]].forEach(([arr, name]) => {
+      const td = tr.insertCell();
+      const m = median(arr);
+      td.textContent = fmtDur(m);
+      if (m == null) { td.className = "empty"; return; }
+      td.tabIndex = 0;
+      td.addEventListener("pointermove", ev => showTip(ev, tipRows(fmtDur(m), `${label} · ${name} · ${fmtN(arr.length)} заказов`)));
+      td.addEventListener("pointerleave", hideTip);
+      td.addEventListener("blur", hideTip);
+    });
+  };
+  const all = { h1: [], h2: [], h3: [], tot: [] };
+  for (const w of whList) {
+    const a = agg[w];
+    if (!a || (!a.h1.length && !a.h2.length && !a.tot.length)) continue;
+    for (const k in all) all[k].push(...a[k]);
+    mkRow(DATA.warehouses[w], a);
+  }
+  if (whList.length > 1) mkRow("Все склады", all);
+}
+
 /* ---------- svg-помощники ---------- */
 const NS = "http://www.w3.org/2000/svg";
 function svgEl(tag, attrs) {
@@ -489,7 +549,7 @@ $("#csvBtn").addEventListener("click", () => {
 });
 
 /* ---------- управление ---------- */
-function render() { tiles(); matrix(); weekly(); buyout(); }
+function render() { tiles(); matrix(); stages(); weekly(); buyout(); }
 function setPreset(days) {
   const to = new Date(), from = new Date();
   from.setDate(from.getDate() - (days - 1));

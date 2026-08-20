@@ -27,6 +27,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 BASE = "https://statistics-api.wildberries.ru/api/v1/supplier"
+MP_BASE = "https://marketplace-api.wildberries.ru/api/v3"
 MSK = timezone(timedelta(hours=3))
 CACHE = "wb_cache.json"
 MAX_WAIT_SEC = 3 * 3600      # первый запрос за запуск готовы ждать до 3 часов
@@ -74,6 +75,83 @@ def api_get(path: str, token: str, date_from: str):
     return rows
 
 
+def mp_get(path: str, token: str, params: dict):
+    """GET к Marketplace API (лимиты у него свои, щадящие). None при 401/403."""
+    url = f"{MP_BASE}/{path}?" + urllib.parse.urlencode(params)
+    for attempt in range(8):
+        req = urllib.request.Request(url, headers={"Authorization": token})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return None
+            if e.code == 429:
+                retry = min(int(e.headers.get("X-Ratelimit-Retry") or 6), 120)
+                time.sleep(retry + 1)
+                continue
+            print(f"Marketplace API {e.code}: {e.read().decode()[:200]}", file=sys.stderr)
+            return None
+    return None
+
+
+def fetch_stages(cache: dict, token: str, start_dt: datetime) -> bool:
+    """Этапы: заказ→сдача поставки (closedAt) и сдача→первый скан на СЦ (scanDt).
+    Источник — Marketplace API (нужна категория токена «Маркетплейс»)."""
+    # 1) поставки: id -> (closedAt, scanDt)
+    supplies, next_ = {}, 0
+    while True:
+        data = mp_get("supplies", token, {"limit": 1000, "next": next_})
+        if data is None:
+            print("  этапы: Marketplace API недоступен (нужна категория токена «Маркетплейс») — пропускаем", flush=True)
+            return False
+        batch = data.get("supplies") or []
+        for sp in batch:
+            supplies[sp.get("id")] = (sp.get("closedAt"), sp.get("scanDt"))
+        if len(batch) < 1000:
+            break
+        next_ = data.get("next") or 0
+        time.sleep(0.4)
+    print(f"  этапы: поставок получено {len(supplies)}", flush=True)
+
+    # 2) сборочные задания: rid -> createdAt, supplyId
+    matched, next_ = 0, 0
+    date_from = int(start_dt.timestamp())
+    while True:
+        data = mp_get("orders", token, {"limit": 1000, "next": next_, "dateFrom": date_from})
+        if data is None:
+            return False
+        batch = data.get("orders") or []
+        for o in batch:
+            rid = o.get("rid")
+            rec = cache["orders"].get(rid)
+            if rec is None:
+                continue
+            sup = supplies.get(o.get("supplyId"))
+            if not sup:
+                continue
+            closed, scan = sup
+            try:
+                t0 = parse_dt(o["createdAt"])
+                if closed:
+                    h1 = (parse_dt(closed) - t0).total_seconds() / 3600
+                    if 0 < h1 < 24 * 30:
+                        rec["hnd"] = round(h1, 1)
+                if closed and scan:
+                    h2 = (parse_dt(scan) - parse_dt(closed)).total_seconds() / 3600
+                    if 0 < h2 < 24 * 30:
+                        rec["srt"] = round(h2, 1)
+                matched += 1
+            except (KeyError, ValueError, TypeError):
+                pass
+        if len(batch) < 1000:
+            break
+        next_ = data.get("next") or 0
+        time.sleep(0.4)
+    print(f"  этапы: сопоставлено заказов {matched}", flush=True)
+    return True
+
+
 def parse_dt(s: str) -> datetime:
     dt = datetime.fromisoformat(s.rstrip("Z"))
     return dt if dt.tzinfo else dt.replace(tzinfo=MSK)
@@ -111,7 +189,8 @@ def build_dataset(cache: dict) -> dict:
             if 0 < h < 24 * 60:
                 hours = round(h, 1)
         flags = (1 if o["cancel"] else 0) | (2 if s and s.get("ret") else 0)
-        recs.append([t_order.strftime("%Y-%m-%d"), hours, w_idx[w], d_idx[d], flags])
+        recs.append([t_order.strftime("%Y-%m-%d"), hours, w_idx[w], d_idx[d], flags,
+                     o.get("hnd"), o.get("srt")])
     recs.sort(key=lambda r: r[0])
     return {
         "generatedAt": datetime.now(MSK).strftime("%Y-%m-%d %H:%M МСК"),
@@ -197,6 +276,12 @@ def main() -> None:
         ok = step()
         if i == 0 and ok:
             time.sleep(61)
+
+    # этапы пути (Marketplace API) — отдельные щадящие лимиты, не мешают статистике
+    try:
+        fetch_stages(cache, args.token, datetime.now(MSK) - timedelta(days=min(args.days, 90)))
+    except Exception as e:
+        print(f"  этапы: ошибка {e} — пропускаем", flush=True)
 
     save_cache(cache)
     if updated == 0 and not cache["orders"]:
