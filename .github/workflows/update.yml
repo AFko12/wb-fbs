@@ -4,7 +4,12 @@ on:
   schedule:
     - cron: "30 0 * * *"   # 03:30 по Москве — тихое время, сторонние сервисы обычно спят
     - cron: "0 11 * * *"   # 14:00 по Москве — дневная досинхронизация
-  workflow_dispatch: {}    # кнопка «Run workflow» для ручного запуска
+  workflow_dispatch:
+    inputs:
+      refresh_orders:
+        description: "Перечитать все заказы заново (подтянуть предметы и артикулы). Продажи и даты вручения сохраняются."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -23,7 +28,8 @@ jobs:
       - name: Забрать изменения из WB (инкрементально) и пересобрать страницу
         env:
           WB_TOKEN: ${{ secrets.WB_TOKEN }}
-        run: python3 fetch_wb_data.py --inject index.html
+          EXTRA: ${{ inputs.refresh_orders && '--refresh-orders' || '' }}
+        run: python3 fetch_wb_data.py --inject index.html $EXTRA
 
       - name: Закоммитить обновление
         if: always()
