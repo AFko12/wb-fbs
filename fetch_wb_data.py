@@ -296,7 +296,20 @@ def main() -> None:
         updated += 1
         return True
 
-    # сначала то, что сильнее устарело (None = никогда не качали)
+    # этапы и реальный СЦ приёмки (Marketplace API) — первыми: у него свои щадящие
+    # лимиты, и он не должен ждать очереди в общем лимите статистики
+    stages_from = datetime.now(MSK) - timedelta(days=min(args.days, 90))
+
+    def stages(tag=""):
+        try:
+            fetch_stages(cache, args.token, stages_from)
+        except Exception as e:
+            print(f"  этапы{tag}: ошибка {e} — пропускаем", flush=True)
+
+    stages()
+    было = len(cache["orders"])
+
+    # дальше — то, что сильнее устарело (None = никогда не качали)
     steps = [fetch_orders, fetch_sales]
     if (cache["cursor_sales"] or "") < (cache["cursor_orders"] or ""):
         steps.reverse()
@@ -305,11 +318,10 @@ def main() -> None:
         if i == 0 and ok:
             time.sleep(61)
 
-    # этапы пути (Marketplace API) — отдельные щадящие лимиты, не мешают статистике
-    try:
-        fetch_stages(cache, args.token, datetime.now(MSK) - timedelta(days=min(args.days, 90)))
-    except Exception as e:
-        print(f"  этапы: ошибка {e} — пропускаем", flush=True)
+    # если статистика принесла новые заказы — досопоставим им этапы и СЦ
+    if len(cache["orders"]) > было:
+        print(f"  новых заказов: {len(cache['orders']) - было} — повторный проход по этапам", flush=True)
+        stages(" (повтор)")
 
     save_cache(cache)
     if updated == 0 and not cache["orders"]:
