@@ -30,7 +30,9 @@ BASE = "https://statistics-api.wildberries.ru/api/v1/supplier"
 MP_BASE = "https://marketplace-api.wildberries.ru/api/v3"
 MSK = timezone(timedelta(hours=3))
 CACHE = "wb_cache.json"
-MAX_WAIT_SEC = 3 * 3600      # первый запрос за запуск готовы ждать до 3 часов
+# сколько ждать общий лимит статистики; WB_MAX_WAIT=120 — быстрый режим:
+# берём только то, что отдаётся сразу (этапы и СЦ из Marketplace), остальное — в следующий запуск
+MAX_WAIT_SEC = int(os.environ.get("WB_MAX_WAIT") or 3 * 3600)
 SKIP_WAIT_SEC = 900          # последующие: если WB просит больше 15 мин — оставим на следующий запуск
 KEEP_DAYS = 90               # глубина хранения в кэше
 _WAITED = 0
