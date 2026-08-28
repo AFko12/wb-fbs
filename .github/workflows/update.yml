@@ -10,6 +10,10 @@ on:
         description: "Перечитать все заказы заново (подтянуть предметы и артикулы). Продажи и даты вручения сохраняются."
         type: boolean
         default: false
+      quick:
+        description: "Быстро: не ждать занятый лимит статистики WB. Обновит этапы и склады из Marketplace API, остальное — в следующий запуск."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -21,7 +25,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 200   # скрипт терпеливо ждёт лимит WB до 3 часов
+    timeout-minutes: 200   # обычный режим терпеливо ждёт лимит WB до 3 часов
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +33,7 @@ jobs:
         env:
           WB_TOKEN: ${{ secrets.WB_TOKEN }}
           EXTRA: ${{ inputs.refresh_orders && '--refresh-orders' || '' }}
+          WB_MAX_WAIT: ${{ inputs.quick && '120' || '' }}
         run: python3 fetch_wb_data.py --inject index.html $EXTRA
 
       - name: Закоммитить обновление
