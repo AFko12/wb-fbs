@@ -115,7 +115,7 @@ def fetch_stages(cache: dict, token: str, start_dt: datetime) -> bool:
     print(f"  этапы: поставок получено {len(supplies)}", flush=True)
 
     # 2) сборочные задания: rid -> createdAt, supplyId
-    matched, next_ = 0, 0
+    matched, offices_found, next_ = 0, 0, 0
     date_from = int(start_dt.timestamp())
     while True:
         data = mp_get("orders", token, {"limit": 1000, "next": next_, "dateFrom": date_from})
@@ -127,6 +127,13 @@ def fetch_stages(cache: dict, token: str, start_dt: datetime) -> bool:
             rec = cache["orders"].get(rid)
             if rec is None:
                 continue
+            # с 14.08.2026 statistics API обезличивает склад («Склад WB РФ»),
+            # но Marketplace API по-прежнему отдаёт конкретный СЦ приёмки
+            off = (o.get("offices") or [None])[0]
+            if off:
+                if "office" not in rec:
+                    offices_found += 1
+                rec["office"] = off
             sup = supplies.get(o.get("supplyId"))
             if not sup:
                 continue
@@ -148,7 +155,7 @@ def fetch_stages(cache: dict, token: str, start_dt: datetime) -> bool:
             break
         next_ = data.get("next") or 0
         time.sleep(0.4)
-    print(f"  этапы: сопоставлено заказов {matched}", flush=True)
+    print(f"  этапы: сопоставлено заказов {matched}, СЦ приёмки определён у {offices_found} новых", flush=True)
     return True
 
 
@@ -177,7 +184,8 @@ def build_dataset(cache: dict) -> dict:
     warehouses, districts, subjects, articles = [], [], [], []
     w_idx, d_idx, s_idx, a_idx, recs = {}, {}, {}, {}, []
     for srid, o in cache["orders"].items():
-        w, d = o["wh"] or "—", o["okrug"] or "Не определён"
+        w = o.get("office") or o.get("wh") or "—"
+        d = o["okrug"] or "Не определён"
         subj = o.get("subj") or "—"
         art = o.get("art") or "—"
         if w not in w_idx:
