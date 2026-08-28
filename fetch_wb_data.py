@@ -174,13 +174,20 @@ def save_cache(c: dict) -> None:
 
 
 def build_dataset(cache: dict) -> dict:
-    warehouses, districts, w_idx, d_idx, recs = [], [], {}, {}, []
+    warehouses, districts, subjects, articles = [], [], [], []
+    w_idx, d_idx, s_idx, a_idx, recs = {}, {}, {}, {}, []
     for srid, o in cache["orders"].items():
         w, d = o["wh"] or "—", o["okrug"] or "Не определён"
+        subj = o.get("subj") or "—"
+        art = o.get("art") or "—"
         if w not in w_idx:
             w_idx[w] = len(warehouses); warehouses.append(w)
         if d not in d_idx:
             d_idx[d] = len(districts); districts.append(d)
+        if subj not in s_idx:
+            s_idx[subj] = len(subjects); subjects.append(subj)
+        if art not in a_idx:
+            a_idx[art] = len(articles); articles.append(art)
         t_order = parse_dt(o["date"])
         s = cache["sales"].get(srid)
         hours = None
@@ -190,11 +197,12 @@ def build_dataset(cache: dict) -> dict:
                 hours = round(h, 1)
         flags = (1 if o["cancel"] else 0) | (2 if s and s.get("ret") else 0)
         recs.append([t_order.strftime("%Y-%m-%d"), hours, w_idx[w], d_idx[d], flags,
-                     o.get("hnd"), o.get("srt")])
+                     o.get("hnd"), o.get("srt"), s_idx[subj], a_idx[art]])
     recs.sort(key=lambda r: r[0])
     return {
         "generatedAt": datetime.now(MSK).strftime("%Y-%m-%d %H:%M МСК"),
-        "warehouses": warehouses, "districts": districts, "orders": recs,
+        "warehouses": warehouses, "districts": districts,
+        "subjects": subjects, "articles": articles, "orders": recs,
     }
 
 
@@ -213,6 +221,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=25, help="глубина при полной перечитке")
     ap.add_argument("--full", action="store_true", help="игнорировать кэш, перечитать всё")
+    ap.add_argument("--refresh-orders", action="store_true",
+                    help="перечитать только заказы (продажи и даты вручения сохраняются)")
     ap.add_argument("--token", default=os.environ.get("WB_TOKEN"))
     ap.add_argument("--inject", metavar="INDEX_HTML")
     ap.add_argument("--out", default="data.json")
@@ -224,6 +234,9 @@ def main() -> None:
     cache = load_cache()
     if args.full:
         cache = {"orders": {}, "sales": {}, "cursor_orders": None, "cursor_sales": None}
+    elif args.refresh_orders:
+        cache["orders"] = {}
+        cache["cursor_orders"] = None
     start = (datetime.now(MSK) - timedelta(days=min(args.days, 90))).strftime("%Y-%m-%dT00:00:00")
     updated = 0
 
@@ -237,10 +250,17 @@ def main() -> None:
         for o in orders:
             if not args.all and o.get("warehouseType") != "Склад продавца":
                 continue
-            cache["orders"][o["srid"]] = {
+            prev = cache["orders"].get(o["srid"]) or {}
+            rec = {
                 "date": o["date"], "wh": o.get("warehouseName") or "",
                 "okrug": o.get("oblastOkrugName") or "", "cancel": bool(o.get("isCancel")),
+                "subj": o.get("subject") or "", "art": o.get("supplierArticle") or "",
+                "cat": o.get("category") or "",
             }
+            for k in ("hnd", "srt"):      # не терять уже посчитанные этапы
+                if k in prev:
+                    rec[k] = prev[k]
+            cache["orders"][o["srid"]] = rec
         if orders:
             cache["cursor_orders"] = max(x["lastChangeDate"] for x in orders)
         updated += 1
