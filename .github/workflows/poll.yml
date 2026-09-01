@@ -1,0 +1,44 @@
+name: Опрос статусов (этапы 2 и 3)
+
+# WB не отдаёт время сортировки и время прибытия в ПВЗ — только текущий статус.
+# Поэтому держим долгоживущий процесс, который спрашивает статусы каждые 5 минут
+# и ставит метку в момент смены. Пять запусков в сутки по ~5 часов закрывают сутки.
+# Работает только через Marketplace API — общий лимит статистики WB не трогает.
+
+on:
+  schedule:
+    - cron: "3 0 * * *"    # 03:03 МСК
+    - cron: "3 5 * * *"    # 08:03 МСК
+    - cron: "3 10 * * *"   # 13:03 МСК
+    - cron: "3 15 * * *"   # 18:03 МСК
+    - cron: "3 20 * * *"   # 23:03 МСК
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Сколько минут работать (по умолчанию 290 ≈ 5 часов)"
+        type: string
+        default: "290"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: poll-status
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Настроить git
+        run: |
+          git config user.name "wb-dashboard-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+      - name: Опрашивать статусы каждые 5 минут
+        env:
+          WB_TOKEN: ${{ secrets.WB_TOKEN }}
+        run: python3 poll_status.py --minutes ${{ inputs.minutes || '290' }} --every 5 --save-every 30 --git

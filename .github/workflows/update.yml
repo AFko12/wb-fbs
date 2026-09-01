@@ -44,4 +44,17 @@ jobs:
           git add -A
           git diff --cached --quiet && echo "нет изменений" && exit 0
           git commit -m "Автообновление данных $(date -u +'%Y-%m-%d %H:%M') UTC"
-          git push
+          # опрос статусов мог запушить свои метки, пока мы ждали лимит WB
+          for i in 1 2 3 4; do
+            git push && exit 0
+            echo "push отклонён ($i/4) — сливаю кэши и пересобираю страницу"
+            git fetch origin "$GITHUB_REF_NAME"
+            python3 merge_cache.py "origin/$GITHUB_REF_NAME"
+            git reset --soft "origin/$GITHUB_REF_NAME"
+            python3 fetch_wb_data.py --rebuild --inject index.html
+            git add -A
+            git diff --cached --quiet && echo "нечего коммитить" && exit 0
+            git commit -m "Автообновление данных $(date -u +'%Y-%m-%d %H:%M') UTC"
+            sleep 10
+          done
+          echo "не удалось запушить" && exit 1
