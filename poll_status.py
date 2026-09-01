@@ -38,6 +38,7 @@ STATUS_URL = f"{fw.MP_BASE}/orders/status"
 CHUNK = 1000
 POLL_DAYS = 21          # заказы старше — уже неинтересны, статус не изменится
 FINAL = {"canceled", "canceled_by_client", "declined_by_client", "defect"}
+DONE = {"sorted", "ready_for_pickup", "sold"}   # этап уже пройден
 
 
 def now_iso() -> str:
@@ -97,17 +98,26 @@ def one_pass(cache: dict, token: str) -> tuple:
                 continue
             rec = cache["orders"][srid]
             wb = st.get("wbStatus") or ""
-            if wb == "sorted" and not rec.get("t2"):
-                rec["t2"] = now_iso(); got_sort += 1
-            elif wb == "ready_for_pickup":
+            prev, rec["st"] = rec.get("st"), wb
+            if wb in FINAL:
+                rec["fin"] = 1
+                continue
+            if prev is None:
+                # первое наблюдение. Если этап уже пройден — когда именно, мы не
+                # знаем и выдумывать не станем: такой заказ в этапы не попадёт.
+                if wb in DONE:
+                    rec["miss"] = 1
+                continue
+            if wb == "sorted":
                 if not rec.get("t2"):
+                    rec["t2"] = now_iso(); got_sort += 1
+            elif wb == "ready_for_pickup":
+                if not rec.get("t2"):     # проскочил оба этапа между опросами
                     rec["t2"] = now_iso(); got_sort += 1
                 if not rec.get("t3"):
                     rec["t3"] = now_iso(); got_pvz += 1
-            elif wb == "sold":
-                rec["miss"] = 1          # выдан, а прибытие в ПВЗ мы не застали
-            elif wb in FINAL:
-                rec["fin"] = 1
+            elif wb == "sold" and not rec.get("t3"):
+                rec["miss"] = 1           # выдан, а прибытие в ПВЗ мы не застали
         if i + CHUNK < len(ids):
             time.sleep(0.3)
     return got_sort, got_pvz, len(ids)

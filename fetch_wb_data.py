@@ -58,6 +58,9 @@ ALIAS = {
 }
 ANON = "Склад WB РФ"          # обезличенное имя, которое WB отдаёт с 14.08.2026
 UNKNOWN = "СЦ не определён"
+# версия правил разметки этапов; при её смене метки опроса сбрасываются,
+# потому что старые собраны по другим правилам и сравнивать их нельзя
+MARKS_V = 2
 
 
 def api_get(path: str, token: str, date_from: str):
@@ -195,7 +198,19 @@ def hours(a, b):
 
 def migrate(c: dict) -> dict:
     """Старый кэш (hnd = заказ→закрытие поставки, srt = закрытие→скан) переводим
-    в новую точку T1: заказ→скан ШК ТТН = hnd + srt."""
+    в новую точку T1: заказ→скан ШК ТТН = hnd + srt.
+    Плюс сброс меток опроса, если правила их простановки менялись."""
+    if c.get("marks_v") != MARKS_V:
+        wiped = 0
+        for rec in c.get("orders", {}).values():
+            hit = False
+            for k in ("t2", "t3", "st", "miss", "fin"):
+                if rec.pop(k, None) is not None:
+                    hit = True
+            wiped += hit
+        c["marks_v"] = MARKS_V
+        if wiped:
+            print(f"  кэш: правила разметки этапов обновлены, сброшено меток у {wiped} заказов", flush=True)
     n = 0
     for rec in c.get("orders", {}).values():
         if "hnd" in rec or "srt" in rec:
@@ -208,7 +223,7 @@ def migrate(c: dict) -> dict:
     return c
 
 
-MARKS = ("t0", "t1", "t2", "t3", "acc", "mid", "office", "fin", "miss")
+MARKS = ("t0", "t1", "t2", "t3", "acc", "mid", "office", "fin", "miss", "st")
 
 
 def merge_marks(base: dict, mine: dict) -> dict:
@@ -240,7 +255,8 @@ def load_cache() -> dict:
     if os.path.exists(CACHE):
         with open(CACHE, encoding="utf-8") as f:
             return migrate(json.load(f))
-    return {"orders": {}, "sales": {}, "cursor_orders": None, "cursor_sales": None}
+    return {"orders": {}, "sales": {}, "cursor_orders": None, "cursor_sales": None,
+            "marks_v": MARKS_V}
 
 
 def save_cache(c: dict) -> None:
