@@ -281,7 +281,7 @@
     <div class="chart-box" id="chS2"></div>
   </div>
   <div class="card">
-    <h2>3. Доставка до ПВЗ: сортировка → прибытие в пункт выдачи</h2>
+    <h2>3. Доставка до ПВЗ: сортировка → прибытие в пункт выдачи, часов</h2>
     <div class="note">Медиана времени от сортировки до появления заказа в ПВЗ. Зависит и от СЦ (как быстро отправляют), и от направления — смотрите вместе с вкладкой «География».</div>
     <div class="legend" id="lgS3"></div>
     <div class="chart-box" id="chS3"></div>
@@ -371,6 +371,16 @@ function fmtDur(h) {
   if (h < 24) return num1(h) + " ч";
   return num1(h / 24) + " дн";
 }
+/* всегда часы — для этапов, где дни только мешают сравнивать */
+const fmtH = h => (h == null || isNaN(h)) ? "—" : num1(h) + " ч";
+/* дни и часы: «3 дн 5 ч» — чтобы видеть и порядок, и точность */
+function fmtDH(h) {
+  if (h == null || isNaN(h)) return "—";
+  if (h < 24) return num1(h) + " ч";
+  let d = Math.floor(h / 24), r = Math.round(h - d * 24);
+  if (r === 24) { d += 1; r = 0; }
+  return r ? d + " дн " + r + " ч" : d + " дн";
+}
 function median(a) {
   if (!a || !a.length) return null;
   const s = [...a].sort((x, y) => x - y), m = s.length >> 1;
@@ -431,10 +441,10 @@ const mPvz  = o => o[F.PVZ]  ?? null;   // 3. сортировка → ПВЗ
 const mTtl  = o => o[F.TTL]  ?? null;   // 4. заказ → ПВЗ
 const mGive = o => o[F.GIVE] ?? null;   // ожидание клиента в ПВЗ
 const STAGES = [
-  { fn: mAcc,  name: "1. Приёмка",        head: "Приёмка (заказ → ШК ТТН)" },
-  { fn: mSrt,  name: "2. Обработка СЦ",   head: "Обработка СЦ (ШК ТТН → сортировка)" },
-  { fn: mPvz,  name: "3. До ПВЗ",         head: "Сортировка → ПВЗ" },
-  { fn: mTtl,  name: "4. Весь путь",      head: "Весь путь до ПВЗ" },
+  { fn: mAcc,  name: "1. Приёмка",      head: "Приёмка (заказ → ШК ТТН)",          fmt: fmtDur },
+  { fn: mSrt,  name: "2. Обработка СЦ", head: "Обработка СЦ (ШК ТТН → сортировка)", fmt: fmtDur },
+  { fn: mPvz,  name: "3. До ПВЗ",       head: "Сортировка → ПВЗ, часов",            fmt: fmtH },
+  { fn: mTtl,  name: "4. Весь путь",    head: "Весь путь до ПВЗ",                   fmt: fmtDH },
 ];
 
 /* ---------- плитки ---------- */
@@ -488,8 +498,8 @@ function tiles() {
   mk("Заказов, шт", fmtN(cur.n), mkDelta(cur.n, prev.n, d => fmtN(Math.round(d)), false));
   mk("1. Приёмка", fmtDur(cur.acc), mkDelta(cur.acc, prev.acc, fmtDur, true));
   mk("2. Обработка на СЦ", fmtDur(cur.srt), mkDelta(cur.srt, prev.srt, fmtDur, true));
-  mk("3. Доставка до ПВЗ", fmtDur(cur.pvz), mkDelta(cur.pvz, prev.pvz, fmtDur, true));
-  mk("4. Весь путь до ПВЗ", fmtDur(cur.ttl), mkDelta(cur.ttl, prev.ttl, fmtDur, true));
+  mk("3. Доставка до ПВЗ", fmtH(cur.pvz), mkDelta(cur.pvz, prev.pvz, fmtH, true));
+  mk("4. Весь путь до ПВЗ", fmtDH(cur.ttl), mkDelta(cur.ttl, prev.ttl, fmtDH, true));
   mk("Выкуп", cur.buy == null ? "—" : num1(cur.buy) + " %", mkDelta(cur.buy, prev.buy, d => num1(d) + " п.п.", false));
 }
 
@@ -536,7 +546,8 @@ function seriesByWarehouse(rows, valueFn, isCount) {
 }
 
 /* ---------- линейный график ---------- */
-function lineChart(boxSel, legendSel, keys, series, kind, emptyMsg) {
+function lineChart(boxSel, legendSel, keys, series, kind, emptyMsg, opts) {
+  opts = opts || {};
   const box = $(boxSel); box.replaceChildren();
   const legend = legendSel ? $(legendSel) : null;
   if (legend) legend.replaceChildren();
@@ -570,13 +581,14 @@ function lineChart(boxSel, legendSel, keys, series, kind, emptyMsg) {
   let maxV = 0;
   shown.forEach(s => s.points.forEach(p => { if (p.y != null && p.y > maxV) maxV = p.y; }));
   /* одна единица на весь график: часы или дни */
-  const asDays = kind === "dur" && maxV >= 48;
+  const asDays = opts.unit === "h" ? false : (kind === "dur" && maxV >= 48);
   const scale = asDays ? 24 : 1;
   const unitLabel = kind === "count" ? "шт" : (asDays ? "дн" : "ч");
   const ticks = niceTicks(maxV / scale * 1.12 || 1);
   const yMax = ticks[ticks.length - 1] || 1;
   const fmtTick = t => kind === "count" ? fmtN(Math.round(t)) : (Number.isInteger(t) ? String(t) : num1(t));
-  const fmtEnd = v => kind === "count" ? fmtN(Math.round(v)) : num1(v / scale) + " " + unitLabel;
+  const fmtEnd = v => kind === "count" ? fmtN(Math.round(v))
+                    : (opts.fmt ? opts.fmt(v) : num1(v / scale) + " " + unitLabel);
   const x = i => keys.length === 1 ? (L + (W - L - R) / 2) : L + i * (W - L - R) / (keys.length - 1);
   const y = v => T + (H - T - B) * (1 - (v / scale) / yMax);
   const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": unitLabel });
@@ -648,7 +660,8 @@ function lineChart(boxSel, legendSel, keys, series, kind, emptyMsg) {
       const k = document.createElement("span"); k.className = "k"; k.style.background = colorOf(s.wIdx);
       const nm = document.createElement("span"); nm.className = "s"; nm.textContent = s.name;
       const v = document.createElement("span"); v.className = "n";
-      v.textContent = p && p.y != null ? (kind === "count" ? fmtN(p.y) : fmtDur(p.y)) : "—";
+      v.textContent = p && p.y != null
+        ? (kind === "count" ? fmtN(p.y) : (opts.fmt || fmtDur)(p.y)) : "—";
       row.append(k, nm, v); nodes.push(row);
     });
     showTipNodes(ev, nodes);
@@ -692,7 +705,7 @@ function tblSummary() {
   const rows = filtered();
   const whIdx = S.wh >= 0 ? [S.wh] : DATA.warehouses.map((_, i) => i);
   const tbl = $("#tblSummary"); tbl.replaceChildren();
-  const heads = ["СЦ приёмки", "Заказов, шт", "Доля", "1. Приёмка", "2. Обработка СЦ", "3. До ПВЗ", "4. Весь путь", "Выкуп"];
+  const heads = ["СЦ приёмки", "Заказов, шт", "Доля", "1. Приёмка", "2. Обработка СЦ", "3. До ПВЗ, ч", "4. Весь путь", "Выкуп"];
   const thead = tbl.createTHead().insertRow();
   heads.forEach(h => { const th = document.createElement("th"); th.textContent = h; thead.append(th); });
   csvSummary = [heads];
@@ -708,7 +721,7 @@ function tblSummary() {
     }
     c0.append(document.createTextNode(label));
     const cells = [fmtN(st.n), num1(sub.length / total * 100) + " %", fmtDur(st.acc), fmtDur(st.srt),
-                   fmtDur(st.pvz), fmtDur(st.ttl), st.buy == null ? "—" : num1(st.buy) + " %"];
+                   fmtH(st.pvz), fmtDH(st.ttl), st.buy == null ? "—" : num1(st.buy) + " %"];
     cells.forEach(v => { const td = tr.insertCell(); td.textContent = v; if (v === "—") td.className = "empty"; });
     csvSummary.push([label, ...cells]);
   };
@@ -729,7 +742,7 @@ function tblStages() {
   heads.forEach(h => { const th = document.createElement("th"); th.textContent = h; thead.append(th); });
 
   const whList = whIdx.filter(w => rows.some(o => o[F.WH] === w));
-  const cols = [...STAGES, { fn: mGive, name: "ждёт клиента" }];
+  const cols = [...STAGES, { fn: mGive, name: "ждёт клиента", fmt: fmtDH }];
   /* медианы по каждому СЦ и столбцу — нужны, чтобы подсветить лучший */
   const grid = whList.map(w => {
     const sub = rows.filter(o => o[F.WH] === w);
@@ -752,14 +765,15 @@ function tblStages() {
     cols.forEach((c, ci) => {
       const vals = sub.map(c.fn).filter(v => v != null);
       const m = meds ? meds[ci] : median(vals);
-      const td = tr.insertCell(); td.textContent = fmtDur(m);
+      const f = c.fmt || fmtDur;
+      const td = tr.insertCell(); td.textContent = f(m);
       out.push(m == null ? "" : num1(m));
       if (m == null) { td.className = "empty"; return; }
       any = true;
       if (best[ci] != null && m === best[ci] && ci < STAGES.length) td.classList.add("best");
       td.tabIndex = 0;
       const lbl = `${label} · ${c.name} · ${fmtN(vals.length)} заказов`;
-      td.addEventListener("pointermove", ev => showTipNodes(ev, tipSimple(fmtDur(m), lbl)));
+      td.addEventListener("pointermove", ev => showTipNodes(ev, tipSimple(f(m), lbl)));
       td.addEventListener("pointerleave", hideTip);
       td.addEventListener("blur", hideTip);
     });
@@ -815,7 +829,7 @@ function tblMatrix() {
       const arr = cell[w + ":" + c] || [];
       const m = colMeds[ci][ri];
       const td = tr.insertCell();
-      td.textContent = fmtDur(m);
+      td.textContent = fmtDH(m);
       out.push(m == null ? "" : num1(m / 24));
       if (m == null) { td.className = "empty"; return; }
       const vals = colMeds[ci].filter(v => v != null);
@@ -825,7 +839,7 @@ function tblMatrix() {
       td.style.background = `rgba(var(--seq-rgb),${(0.05 + 0.22 * t).toFixed(3)})`;
       td.tabIndex = 0;
       const lbl = `${DATA.warehouses[w]} → ${c === "all" ? "все направления" : shortD(DATA.districts[c])} · ${fmtN(arr.length)} заказов`;
-      td.addEventListener("pointermove", ev => showTipNodes(ev, tipSimple(fmtDur(m), lbl)));
+      td.addEventListener("pointermove", ev => showTipNodes(ev, tipSimple(fmtDH(m), lbl)));
       td.addEventListener("pointerleave", hideTip);
       td.addEventListener("blur", hideTip);
     });
@@ -896,11 +910,13 @@ function render() {
     const live = rows.filter(o => !(o[F.FLAGS] & 1));
     const waitMsg = "Этап считается по меткам опроса статусов — они собираются только для заказов, "
       + "оформленных после его запуска. Первые значения появятся в течение суток.";
-    [[mAcc, "#chS1", "#lgS1", null], [mSrt, "#chS2", "#lgS2", waitMsg],
-     [mPvz, "#chS3", "#lgS3", waitMsg], [mTtl, "#chS4", "#lgS4", waitMsg],
-     [mGive, "#chS5", "#lgS5", waitMsg]].forEach(([fn, box, lg, msg]) => {
+    [[mAcc, "#chS1", "#lgS1", null, {}],
+     [mSrt, "#chS2", "#lgS2", waitMsg, {}],
+     [mPvz, "#chS3", "#lgS3", waitMsg, { unit: "h", fmt: fmtH }],
+     [mTtl, "#chS4", "#lgS4", waitMsg, { fmt: fmtDH }],
+     [mGive, "#chS5", "#lgS5", waitMsg, { fmt: fmtDH }]].forEach(([fn, box, lg, msg, opts]) => {
       const s = seriesByWarehouse(live, fn, false);
-      lineChart(box, lg, s.keys, s.series, "dur", HAS_TTL ? null : msg);
+      lineChart(box, lg, s.keys, s.series, "dur", HAS_TTL ? null : msg, opts);
     });
     tblStages();
   }
