@@ -61,6 +61,11 @@ UNKNOWN = "СЦ не определён"
 # версия правил разметки этапов; при её смене метки опроса сбрасываются,
 # потому что старые собраны по другим правилам и сравнивать их нельзя
 MARKS_V = 2
+# два СЦ считаются одной точкой сдачи, если их сканы ШК ТТН регулярно
+# приходятся на одну и ту же минуту: физически это один человек в одном месте
+SAME_TRIP_SEC = 180          # окно «одна и та же сдача»
+LINK_SHARE = 0.8             # доля совпавших сканов, при которой СЦ считается сданным в чужой точке
+MIN_SCANS = 3                # меньше — статистики не хватает, СЦ остаётся сам по себе
 
 
 def api_get(path: str, token: str, date_from: str):
@@ -270,6 +275,67 @@ def save_cache(c: dict) -> None:
     os.replace(tmp, CACHE)
 
 
+def handover_points(cache: dict) -> dict:
+    """Где заказы СДАЮТ, а не куда они едут.
+
+    WB не сообщает город сдачи: в заказе есть только СЦ назначения. Но момент
+    скана ШК ТТН он отдаёт точно, а сканы в одну минуту делает один человек в
+    одном месте. Поэтому: если почти все сканы одного СЦ совпадают со сканами
+    другого — значит поставки туда сдают вместе, в одной точке. Имя точки —
+    по тому СЦ группы, где сдач больше всего.
+
+    Возвращает {СЦ: точка сдачи}. Список нигде не прописан: начнём возить
+    во Владимир напрямую — сканы разойдутся, и разрез поправится сам."""
+    scans = {}
+    for r in cache["orders"].values():
+        if r.get("t1") and r.get("office"):
+            scans.setdefault(r["office"], set()).add(parse_dt(r["t1"]))
+    offices = {o: sorted(v) for o, v in scans.items()}
+
+    def share(a, b):
+        """Доля сканов a, у которых есть скан b в том же окне."""
+        if not offices[a]:
+            return 0.0
+        hit = sum(1 for t in offices[a]
+                  if any(abs((t - u).total_seconds()) <= SAME_TRIP_SEC for u in offices[b]))
+        return hit / len(offices[a])
+
+    names = list(offices)
+    parent = {o: o for o in names}
+
+    def root(o):
+        while parent[o] != o:
+            parent[o] = parent[parent[o]]
+            o = parent[o]
+        return o
+
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if len(offices[a]) < MIN_SCANS or len(offices[b]) < MIN_SCANS:
+                continue
+            s = max(share(a, b), share(b, a))
+            if s >= LINK_SHARE:
+                ra, rb = root(a), root(b)
+                if ra != rb:
+                    parent[rb] = ra
+            elif s > 0.2:
+                print(f"  точки сдачи: {a} и {b} совпадают лишь на {s:.0%} — "
+                      f"похоже, сдаём то туда, то сюда; считаем их разными точками", flush=True)
+
+    groups = {}
+    for o in names:
+        groups.setdefault(root(o), []).append(o)
+    out = {}
+    for members in groups.values():
+        hub = max(members, key=lambda o: len(offices[o]))   # где сдач больше всего
+        for o in members:
+            out[o] = hub
+    mixed = {o: p for o, p in out.items() if o != p}
+    if mixed:
+        print("  точки сдачи: " + "; ".join(f"{o} сдаём в {p}" for o, p in sorted(mixed.items())), flush=True)
+    return out
+
+
 def build_dataset(cache: dict) -> dict:
     # реальные названия СЦ, которые отдал маркетплейс, — к ним приводим остальные
     offices = {o["office"] for o in cache["orders"].values() if o.get("office")}
@@ -290,15 +356,18 @@ def build_dataset(cache: dict) -> dict:
                 return v
         return name
 
-    warehouses, districts, subjects, articles = [], [], [], []
-    w_idx, d_idx, s_idx, a_idx, recs = {}, {}, {}, {}, []
+    hand = handover_points(cache)
+    warehouses, districts, subjects, articles, points = [], [], [], [], []
+    w_idx, d_idx, s_idx, a_idx, p_idx, recs = {}, {}, {}, {}, {}, []
     for srid, o in cache["orders"].items():
         w = norm(o.get("office") or o.get("wh") or "")
         d = o["okrug"] or "Не определён"
         subj = o.get("subj") or "—"
         art = o.get("art") or "—"
+        pt = norm(hand.get(o.get("office")) or "") if o.get("office") else w
         for val, idx, arr in ((w, w_idx, warehouses), (d, d_idx, districts),
-                              (subj, s_idx, subjects), (art, a_idx, articles)):
+                              (subj, s_idx, subjects), (art, a_idx, articles),
+                              (pt, p_idx, points)):
             if val not in idx:
                 idx[val] = len(arr)
                 arr.append(val)
@@ -319,12 +388,12 @@ def build_dataset(cache: dict) -> dict:
 
         flags = (1 if o["cancel"] else 0) | (2 if s and s.get("ret") else 0)
         recs.append([parse_dt(t0).strftime("%Y-%m-%d"), tot, w_idx[w], d_idx[d], flags,
-                     acc, srt, pvz, ttl, give, s_idx[subj], a_idx[art]])
+                     acc, srt, pvz, ttl, give, s_idx[subj], a_idx[art], p_idx[pt]])
     recs.sort(key=lambda r: r[0])
     return {
-        "schema": 2,
+        "schema": 3,
         "generatedAt": datetime.now(MSK).strftime("%Y-%m-%d %H:%M МСК"),
-        "warehouses": warehouses, "districts": districts,
+        "warehouses": warehouses, "districts": districts, "points": points,
         "subjects": subjects, "articles": articles, "orders": recs,
     }
 
